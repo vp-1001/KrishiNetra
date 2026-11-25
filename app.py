@@ -31,7 +31,9 @@ from flask import (
     Flask,
     request,
     render_template_string,
-    url_for
+    url_for,
+    abort,
+    send_from_directory
 )
 from werkzeug.utils import secure_filename
 from torchvision import models, transforms
@@ -54,6 +56,7 @@ CLASS_MAP_PATH = ROOT / "class_indices.json"
 
 UPLOAD_DIR = ROOT / "static" / "uploads"
 HEATMAP_DIR = ROOT / "static" / "heatmaps"
+PHOTO_DIR = ROOT / "photos"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 HEATMAP_DIR.mkdir(parents=True, exist_ok=True)
@@ -314,7 +317,8 @@ class GradCAM:
     """
     Memory-conscious Grad-CAM for EfficientNet-B0.
 
-    Uses the final convolutional layer of EfficientNet-B0.
+    Uses the last 14x14 feature stage before EfficientNet-B0 downsamples
+    its representation to 7x7.
     """
 
     def __init__(self, model):
@@ -322,17 +326,7 @@ class GradCAM:
         self.model = model
         self.activations = None
 
-        target_layer = None
-
-        for module in model.features.modules():
-            if isinstance(module, nn.Conv2d):
-                target_layer = module
-
-        if target_layer is None:
-            raise RuntimeError(
-                "Could not locate EfficientNet convolutional layer."
-            )
-
+        target_layer = model.features[5]
         self.handle = target_layer.register_forward_hook(
             self.forward_hook
         )
@@ -411,7 +405,7 @@ class GradCAM:
 
 def create_heatmap(original, cam, output_path):
     """
-    Generate a colored Grad-CAM heatmap and overlay.
+    Generate a colored Grad-CAM overlay.
     """
 
     cam_image = Image.fromarray(
@@ -444,7 +438,6 @@ def create_heatmap(original, cam, output_path):
     colored = np.uint8(colored * 255)
 
     heatmap = Image.fromarray(colored)
-
     overlay = Image.blend(
         original.convert("RGB"),
         heatmap,
@@ -638,36 +631,11 @@ def predict_image(image_path):
 
             gradcam.close()
 
-    # Calculate prediction probabilities.
-    probabilities = torch.softmax(logits, dim=1)[0]
-
     predicted_index = int(
-        torch.argmax(probabilities).item()
-    )
-
-    confidence = float(
-        probabilities[predicted_index].item() * 100
+        torch.argmax(logits, dim=1).item()
     )
 
     prediction = CLASS_NAMES[predicted_index]
-
-    # Calculate top three predictions.
-    top_values, top_indices = torch.topk(
-        probabilities,
-        k=3
-    )
-
-    top_predictions = []
-
-    for value, index in zip(
-        top_values.tolist(),
-        top_indices.tolist()
-    ):
-
-        top_predictions.append({
-            "name": CLASS_NAMES[index],
-            "confidence": round(value * 100, 2)
-        })
 
     # Generate Grad-CAM image.
     heatmap_filename = f"{uuid.uuid4().hex}.jpg"
@@ -688,10 +656,6 @@ def predict_image(image_path):
             " - "
         ).replace("_", " "),
 
-        "confidence": round(confidence, 2),
-
-        "top_predictions": top_predictions,
-
         "guidance": get_guidance(prediction),
 
         "heatmap": heatmap_filename
@@ -705,6 +669,15 @@ def predict_image(image_path):
 app = Flask(__name__)
 
 app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE
+
+
+@app.route("/assets/<filename>")
+def branding_asset(filename):
+    if filename not in {"logo.png", "background.jpg"}:
+        abort(404)
+
+    return send_from_directory(PHOTO_DIR, filename)
+
 
 ALLOWED_EXTENSIONS = {
     "jpg",
@@ -738,7 +711,7 @@ HTML = r"""
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-<title>AgroDetect | Plant Disease Intelligence</title>
+<title>Krishi Netra | Plant Health, In Focus</title>
 
 <style>
 
@@ -991,28 +964,10 @@ button:disabled {
     letter-spacing: -.45px;
 }
 
-.confidence {
-    display: inline-block;
-
-    font-size: 36px;
-
-    color: var(--green);
-
-    font-weight: 800;
-
-    margin: 8px 0;
-
-    padding: 5px 15px;
-
-    border-radius: 12px;
-
-    background: #eaf7ee;
-}
-
 .images {
     display: grid;
 
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
 
     gap: 20px;
 }
@@ -1053,18 +1008,6 @@ ul {
     padding-left: 21px;
 
     line-height: 1.9;
-}
-
-.top-item {
-    display: flex;
-
-    justify-content: space-between;
-
-    gap: 18px;
-
-    padding: 12px 0;
-
-    border-bottom: 1px solid var(--border);
 }
 
 .panel h2 {
@@ -1111,6 +1054,460 @@ footer {
     }
 }
 
+/* Krishi Netra visual system */
+:root {
+    color-scheme: light;
+    --bg: #263a2a;
+    --surface: rgba(39, 58, 43, .84);
+    --green: #d3a875;
+    --dark: #d8b27f;
+    --text: #f7f0e2;
+    --muted: #e5d7bd;
+    --border: rgba(226, 199, 157, .38);
+}
+
+body {
+    min-height: 100vh;
+    background:
+        radial-gradient(ellipse at 82% 4%, rgba(221, 175, 137, .08), transparent 34%),
+        radial-gradient(ellipse at 2% 46%, rgba(127, 181, 160, .07), transparent 36%),
+        linear-gradient(rgba(39, 48, 34, .12), rgba(39, 48, 34, .12)),
+        url("/assets/background.jpg") center center / cover fixed;
+    color: #f7f0e2;
+    font-family: "Segoe UI", Inter, Arial, sans-serif;
+    font-weight: 700;
+}
+
+header {
+    min-height: 76px;
+    padding: 14px max(4%, calc((100% - 1240px) / 2));
+    gap: 20px;
+    border-bottom: 1px solid rgba(218, 187, 142, .35);
+    background: rgba(34, 57, 42, .78);
+    box-shadow: none;
+}
+
+.brand-lockup {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.brand-logo {
+    display: block;
+    width: 48px;
+    height: 48px;
+    flex: none;
+    object-fit: cover;
+    border-radius: 50%;
+}
+
+.brand {
+    color: #f7f0e2;
+    font-size: 19px;
+    font-weight: 750;
+    letter-spacing: -.6px;
+}
+
+.brand span {
+    color: #d3a875;
+}
+
+.brand-caption,
+.top-meta,
+.eyebrow,
+.section-kicker {
+    color: #e5d7bd;
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: 1.7px;
+    text-transform: uppercase;
+}
+
+.top-meta {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    letter-spacing: 1.1px;
+}
+
+.status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #acd28b;
+    box-shadow: 0 0 10px rgba(172, 210, 139, .42);
+}
+
+.container {
+    width: min(1240px, 92%);
+    margin: 0 auto;
+    padding: 62px 0 36px;
+}
+
+.hero {
+    margin-bottom: 34px;
+    padding: 10px 0 30px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 250px;
+    align-items: end;
+    gap: 38px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+.hero > div:first-child,
+.hero-aside {
+    padding: 22px;
+    border: 1px solid rgba(226, 199, 157, .38);
+    border-radius: 16px;
+    background: rgba(34, 55, 41, .78);
+    backdrop-filter: blur(3px);
+}
+
+.eyebrow,
+.section-kicker {
+    display: block;
+    margin: 0 0 17px;
+    color: #d3a875;
+}
+
+.hero h1 {
+    max-width: 760px;
+    margin: 0 0 18px;
+    color: #d8b27f;
+    font-size: clamp(42px, 7vw, 76px);
+    font-weight: 700;
+    letter-spacing: -4px;
+    line-height: .99;
+}
+
+.hero h1 span {
+    color: #e1bd8b;
+    font-family: Georgia, "Times New Roman", serif;
+    font-weight: 700;
+    font-style: italic;
+}
+
+.hero p {
+    max-width: 610px;
+    margin: 0;
+    color: #f0e6d3;
+    font-size: 15px;
+    line-height: 1.75;
+}
+
+.hero-aside {
+    padding: 20px;
+}
+
+.hero-aside strong {
+    display: block;
+    margin-bottom: 8px;
+    color: #d8b27f;
+    font-size: 13px;
+}
+
+.hero-aside p {
+    font-size: 12px;
+    line-height: 1.65;
+}
+
+.panel {
+    margin-bottom: 20px;
+    padding: 28px;
+    border: 1px solid rgba(226, 199, 157, .38);
+    border-radius: 18px;
+    background: rgba(39, 58, 43, .84);
+    box-shadow: 0 14px 36px rgba(17, 26, 18, .2);
+    transition: none;
+}
+
+.panel:hover {
+    box-shadow: 0 14px 36px rgba(17, 26, 18, .28);
+}
+
+.upload-panel {
+    padding: 18px;
+}
+
+.upload {
+    min-height: 150px;
+    padding: 23px 26px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 20px;
+    border: 1px dashed rgba(226, 199, 157, .62);
+    border-radius: 13px;
+    background: linear-gradient(110deg, rgba(211, 168, 117, .12), rgba(26, 46, 34, .5) 62%);
+    text-align: left;
+}
+
+.upload-icon {
+    width: 46px;
+    height: 46px;
+    display: grid;
+    place-items: center;
+    border: 1px solid rgba(226, 199, 157, .52);
+    border-radius: 14px;
+    color: #e1bd8b;
+    font-size: 21px;
+    cursor: pointer;
+}
+
+.upload-copy h3 {
+    margin: 0 0 6px;
+    color: #d8b27f;
+    font-size: 17px;
+}
+
+.upload-copy p {
+    margin: 0;
+    color: #e5d7bd;
+    font-size: 12px;
+}
+
+input[type=file] {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    margin: 12px 0 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: #f0e6d3;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+input[type=file]::file-selector-button {
+    margin-right: 10px;
+    padding: 8px 11px;
+    border: 1px solid rgba(226, 199, 157, .45);
+    border-radius: 8px;
+    background: rgba(217, 191, 153, .2);
+    color: #fff5e3;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+button {
+    padding: 13px 18px;
+    border: 0;
+    border-radius: 9px;
+    background: #9c6641;
+    color: #fff5e3;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+    box-shadow: none;
+}
+
+button:hover {
+    transform: translateY(-1px);
+    background: #825034;
+    box-shadow: none;
+}
+
+button:disabled {
+    background: #5f6657;
+    color: #f1e8d8;
+}
+
+.error {
+    color: #ffe4dc;
+    background: rgba(112, 43, 34, .84);
+    border: 1px solid rgba(239, 167, 146, .5);
+}
+
+.notice {
+    color: #ffedc8;
+    background: rgba(102, 74, 34, .86);
+    border: 1px solid rgba(225, 189, 139, .5);
+}
+
+.result-title {
+    margin: 0 0 23px;
+    color: #d8b27f;
+    font-size: clamp(21px, 3vw, 30px);
+    letter-spacing: -.7px;
+}
+
+.result-title span {
+    color: #e1bd8b;
+}
+
+.images {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.images figure {
+    min-width: 0;
+    margin: 0;
+    padding: 10px;
+    border: 1px solid rgba(226, 199, 157, .4);
+    border-radius: 12px;
+    background: rgba(26, 45, 33, .72);
+}
+
+.images img {
+    width: 100%;
+    height: clamp(210px, 34vw, 390px);
+    padding: 0;
+    object-fit: contain;
+    border: 0;
+    border-radius: 7px;
+    background: rgba(18, 30, 22, .45);
+}
+
+.image-label {
+    display: block;
+    padding: 3px 2px 10px;
+    color: #eadcc4;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1.25px;
+    text-transform: uppercase;
+}
+
+.map-note {
+    max-width: 780px;
+    margin: 16px 0 0;
+    color: #f0e6d3;
+    font-size: 12px;
+    line-height: 1.7;
+}
+
+.result-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.result-heading .result-title {
+    margin-bottom: 20px;
+}
+
+.result-index {
+    flex: none;
+    color: #eadcc4;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.4px;
+}
+
+.result-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.guidance-card {
+    padding: 18px;
+    border: 1px solid rgba(226, 199, 157, .38);
+    border-radius: 12px;
+    background: rgba(25, 45, 33, .72);
+}
+
+.guidance-card h3 {
+    margin-top: 0;
+    color: #d8b27f;
+    font-size: 14px;
+}
+
+ul {
+    padding-left: 18px;
+    margin-bottom: 0;
+    color: #f0e6d3;
+    font-size: 13px;
+    line-height: 1.8;
+}
+
+.panel h2 {
+    margin-top: 0;
+    color: #d8b27f;
+    letter-spacing: -.5px;
+}
+
+.disease-info > p {
+    color: #f0e6d3;
+    font-size: 14px;
+    line-height: 1.7;
+}
+
+footer {
+    padding: 22px 4%;
+    border-top: 1px solid rgba(226, 199, 157, .38);
+    background: rgba(34, 55, 41, .82);
+    color: #eadcc4;
+    font-size: 11px;
+    letter-spacing: .3px;
+}
+
+@media(max-width:700px) {
+    .container {
+        width: min(100% - 32px, 600px);
+        margin: 24px auto;
+        padding-top: 38px;
+    }
+
+    .hero {
+        grid-template-columns: 1fr;
+        gap: 20px;
+        padding: 10px 0 12px;
+    }
+
+    .hero h1 {
+        letter-spacing: -2.5px;
+    }
+
+    .hero-aside {
+        padding: 16px;
+    }
+
+    .panel {
+        padding: 20px;
+    }
+
+    .upload {
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 13px;
+        padding: 18px;
+    }
+
+    .upload button {
+        grid-column: 1 / -1;
+    }
+
+    .images,
+    .result-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .images img {
+        height: clamp(220px, 64vw, 380px);
+    }
+}
+
+@media(max-width:390px) {
+    .top-meta {
+        font-size: 8px;
+        letter-spacing: .7px;
+    }
+
+    .brand {
+        font-size: 17px;
+    }
+
+    .result-index {
+        display: none;
+    }
+}
+
 </style>
 
 </head>
@@ -1119,13 +1516,20 @@ footer {
 
 <header>
 
-    <div class="brand">
-        Agro<span>Detect</span>
+    <div class="brand-lockup">
+        <img class="brand-logo" src="/assets/logo.png" alt="Krishi Netra logo">
+        <div>
+            <div class="brand">
+                Krishi <span>Netra</span>
+            </div>
+            <div class="brand-caption">Plant health · in focus</div>
+        </div>
     </div>
 
-    <small>
-        Powered by EfficientNet-B0
-    </small>
+    <div class="top-meta">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>{% if ready %}Vision system ready{% else %}Model unavailable{% endif %}</span>
+    </div>
 
 </header>
 
@@ -1135,15 +1539,18 @@ footer {
 
 <section class="hero">
 
-    <h1>
-        Plant Disease Intelligence
-    </h1>
-
-    <p>
-        Upload a plant leaf image to identify its condition,
-        visualize the model's attention using Grad-CAM,
-        and explore recommended management practices.
-    </p>
+    <div>
+        <span class="eyebrow">FIELD VISION / PLANT HEALTH</span>
+        <h1>See the signs.<br><span>Protect the harvest.</span></h1>
+        <p>
+            A closer look at crop health. Add a leaf photo to surface
+            visual clues and practical next steps.
+        </p>
+    </div>
+    <aside class="hero-aside">
+        <strong>Observe · Understand · Act</strong>
+        <p>AI-assisted guidance for an informed first look. Confirm field diagnoses with a local crop specialist.</p>
+    </aside>
 
 </section>
 
@@ -1181,34 +1588,24 @@ footer {
     >
 
         <div class="upload">
-
-            <h3>
-                Upload a crop photograph
-            </h3>
-
-            <p>
-                Supported: JPG, JPEG, PNG, WEBP, BMP
-            </p>
-
-            <input
-                type="file"
-                name="image"
-                accept="image/*"
-                required
-                {% if not ready %}disabled{% endif %}
-            >
-
-            <br>
-
+            <label class="upload-icon" for="image-upload" aria-label="Choose a leaf image">＋</label>
+            <div class="upload-copy">
+                <h3>Add a leaf image</h3>
+                <p>JPG, PNG, WEBP or BMP · clear, well-lit photos work best</p>
+                <input
+                    type="file"
+                    id="image-upload"
+                    name="image"
+                    accept="image/*"
+                    required
+                    aria-label="Choose a crop photograph"
+                    {% if not ready %}disabled{% endif %}
+                >
+            </div>
             <button
                 type="submit"
                 {% if not ready %}disabled{% endif %}
-            >
-
-                Analyze Plant Image
-
-            </button>
-
+            >Analyze image <span aria-hidden="true">→</span></button>
         </div>
 
     </form>
@@ -1221,101 +1618,50 @@ footer {
 
 <section class="panel">
 
-    <h2 class="result-title">
-        Prediction Results
-    </h2>
-
-    <h3>
-        {{ result.display_name }}
-    </h3>
-
-    <div class="confidence">
-        {{ result.confidence }}%
+    <div class="result-heading">
+        <div>
+            <span class="section-kicker">ANALYSIS / VISUAL REVIEW</span>
+            <h2 class="result-title">Affected-area view</h2>
+        </div>
+        <span class="result-index">01 — 02</span>
     </div>
 
-    <p>
-        Model confidence score
-    </p>
-
-</section>
-
-
-<section class="panel">
-
-    <h2>
-        Grad-CAM Visualization
-    </h2>
+    <h3 class="result-title">
+        Predicted condition: <span>{{ result.display_name }}</span>
+    </h3>
 
     <div class="images">
 
-        <div>
-
-            <div class="image-label">
-                Original Image
-            </div>
-
+        <figure>
+            <figcaption class="image-label">Original photograph</figcaption>
             <img
                 src="{{ original_url }}"
                 alt="Uploaded plant leaf"
             >
-
-        </div>
-
-
-        <div>
-
-            <div class="image-label">
-                Grad-CAM Heatmap Overlay
-            </div>
-
+        </figure>
+        <figure>
+            <figcaption class="image-label">Attention highlights</figcaption>
             <img
                 src="{{ heatmap_url }}"
-                alt="Grad-CAM visualization"
+                alt="Grad-CAM attention overlay"
             >
-
-        </div>
+        </figure>
 
     </div>
 
-    <p>
-        Highlighted regions indicate image areas that contributed
-        to the model's selected prediction. They are not a
-        definitive biological diagnosis.
+    <p class="map-note">
+        The attention view highlights image regions that influenced
+        the prediction. It is not a verified lesion mask and may include
+        healthy tissue or miss infected spots.
     </p>
 
 </section>
 
 
-<section class="panel">
+<section class="panel disease-info">
 
-    <h2>
-        Top Predictions
-    </h2>
-
-    {% for item in result.top_predictions %}
-
-        <div class="top-item">
-
-            <strong>
-                {{ item.name.replace("___", " - ").replace("_", " ") }}
-            </strong>
-
-            <span>
-                {{ item.confidence }}%
-            </span>
-
-        </div>
-
-    {% endfor %}
-
-</section>
-
-
-<section class="panel">
-
-    <h2>
-        Disease Information
-    </h2>
+    <span class="section-kicker">FIELD NOTES / NEXT STEPS</span>
+    <h2>Disease information</h2>
 
     <p>
         {{ result.guidance.description }}
@@ -1324,7 +1670,7 @@ footer {
     <div class="result-grid">
 
 
-        <div>
+        <div class="guidance-card">
 
             <h3>
                 Management Recommendations
@@ -1345,7 +1691,7 @@ footer {
         </div>
 
 
-        <div>
+        <div class="guidance-card">
 
             <h3>
                 Prevention
@@ -1379,11 +1725,7 @@ footer {
 
 <footer>
 
-    AgroDetect | Plant Disease Classification and Explainable AI
-
-    <br>
-
-    EfficientNet-B0 + Grad-CAM
+    KRISHI NETRA <span aria-hidden="true">·</span> AI-assisted plant health screening
 
 </footer>
 

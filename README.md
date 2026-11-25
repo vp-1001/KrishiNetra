@@ -146,7 +146,7 @@ The metrics are generated from the local test set at execution time. No metric v
 - [ ] Run the evaluation script and retain all generated result files.
 - [ ] Review low-recall and commonly confused classes in the report and confusion matrix.
 - [ ] Verify the Flask app starts and `/health` reports `model_loaded: true`, 38 classes, and the expected device.
-- [ ] Test representative healthy and diseased leaf images; inspect prediction, top-3 scores, and Grad-CAM overlay.
+- [ ] Test representative healthy and diseased leaf images; inspect the prediction and affected-area attention overlay.
 - [ ] Test invalid file types, corrupt images, and oversized uploads.
 - [ ] Keep the checkpoint and dataset out of public source control unless redistribution is authorized.
 - [ ] Record Python/PyTorch/torchvision versions and the evaluation date in the final project report.
@@ -154,7 +154,7 @@ The metrics are generated from the local test set at execution time. No metric v
 
 ## Interpretation and limitations
 
-The confidence score is the model's softmax score, not a calibrated probability of field diagnosis. Grad-CAM is an explanatory visualization of image regions influencing the model, not proof of causal disease features. Predictions can be affected by image quality, lighting, cultivar, field conditions, and differences between PlantVillage images and real-world photographs. Disease-management text is general information; confirm treatment decisions with a qualified local agricultural expert.
+The model predicts an image-level class; its Grad-CAM overlay is an explanatory visualization, not a pixel-level lesion segmentation. It can miss infected areas or highlight unrelated features. Reliable lesion coverage requires a segmentation model trained and validated on images with pixel-level lesion masks. Predictions can be affected by image quality, lighting, cultivar, field conditions, and differences between PlantVillage images and real-world photographs. Disease-management text is general information; confirm treatment decisions with a qualified local agricultural expert.
 
 ## Model scope
 
